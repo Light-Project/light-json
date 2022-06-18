@@ -5,6 +5,7 @@
 
 #include "json.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 static const char json_test[] = {
     "["
@@ -476,42 +477,65 @@ static void json_dumpinfo(struct json_node *parent, unsigned int depth)
     struct json_node *child;
     unsigned int count;
 
-    if (parent->flags & JSON_IS_ARRAY)
-        printf("%s: array\n", parent->name);
-    else if (parent->flags & JSON_IS_OBJECT)
-        printf("%s: object\n", parent->name);
+    if (json_test_array(parent))
+        printf("array: %s {\n", parent->name);
+    else if (json_test_object(parent))
+        printf("object: %s {\n", parent->name);
 
     list_for_each_entry(child, &parent->child, sibling) {
         for (count = 0; count < depth; ++count)
             printf("    ");
-        if (child->flags & (JSON_IS_ARRAY | JSON_IS_OBJECT)) {
+        if (json_test_array(child) || json_test_object(child)) {
             json_dumpinfo(child, depth + 1);
             continue;
         }
         printf("%s: ", child->name);
-        if (child->flags & JSON_IS_NUMBER)
+        if (json_test_number(child))
             printf("(%ld)", child->number);
-        else if (child->flags & JSON_IS_STRING)
+        else if (json_test_string(child))
             printf("'%s'", child->string);
-        else if (child->flags & JSON_IS_NULL)
+        else if (json_test_null(child))
             printf("null");
-        else if (child->flags & JSON_IS_TRUE)
+        else if (json_test_true(child))
             printf("true");
-        else if (child->flags & JSON_IS_FALSE)
+        else /* json_test_false(child) */
             printf("false");
         printf("\n");
     }
+
+    for (count = 0; count < depth - 1; ++count)
+        printf("    ");
+    printf("}\n");
 }
 
 int main(int argc, char *argv[])
 {
     struct json_node *jnode;
     int retval;
+    char *buff;
+    int length;
 
     retval = json_parse(json_test, &jnode);
     if (retval)
         return retval;
 
+    printf("pseudo expression:\n");
     json_dumpinfo(jnode, 1);
-    return 0;
+
+    printf("json encode:\n");
+    length = json_encode(jnode, NULL, 0);
+
+    buff = malloc(length);
+    if (!buff) {
+        retval = -ENOMEM;
+        goto finish;
+    }
+
+    length = json_encode(jnode, buff, length);
+    fwrite(buff, length, 1, stdout);
+    free(buff);
+
+finish:
+    json_release(jnode);
+    return retval;
 }

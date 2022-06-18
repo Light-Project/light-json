@@ -10,4 +10,11 @@
     sizeof(arr) / sizeof((arr)[0]) \
 )
 
+#define max(a, b) ({ \
+    typeof(a) _amax = (a); \
+    typeof(a) _bmax = (b); \
+    (void)(&_amax == &_bmax); \
+    _amax > _bmax ? _amax : _bmax; \
+})
+
 #endif  /* _MACRO_H_ */

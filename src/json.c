@@ -5,6 +5,7 @@
 
 #include "json.h"
 #include <ctype.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -38,8 +39,8 @@ static const struct json_transition transition_table[] = {
     {JSON_STATE_NAME,     JSON_STATE_COLON,    '"',   '"',    0,    0,  false},
     {JSON_STATE_COLON,    JSON_STATE_BODY,     ':',   ':',    0,    0,  false},
 
-    {JSON_STATE_STRING,   JSON_STATE_ESC,     '\\',  '\\',    0,  + 1,  false},
     {JSON_STATE_NAME,     JSON_STATE_ESC,     '\\',  '\\',    0,  + 1,  false},
+    {JSON_STATE_STRING,   JSON_STATE_ESC,     '\\',  '\\',    0,  + 1,  false},
     {JSON_STATE_ESC,      JSON_STATE_NULL,    '\0',  '\0',    0,  - 1,   true},
 
     {JSON_STATE_BODY,     JSON_STATE_ARRAY,    '[',   '[',    0,    0,  false},
@@ -82,7 +83,7 @@ static inline bool is_record(enum json_state state)
 
 static inline const char *skip_lack(const char *string)
 {
-    while (!isprint(*string) || *string == ' ')
+    while (*string && (!isprint(*string) || *string == ' '))
         string++;
     return string;
 }
@@ -96,6 +97,7 @@ int json_parse(const char *buff, struct json_node **root)
     unsigned int tpos = 0, tsize = PASER_TEXT_DEF;
     int nspos = 0, cspos = 0, nnpos = -1, cnpos = -1;
     char *tbuff, *nblock;
+    int retval = 0;
     const char *walk;
     bool cross;
 
@@ -130,6 +132,11 @@ int json_parse(const char *buff, struct json_node **root)
             cross = major->cross;
         }
 
+        if (nnpos >= PASER_NODE_DEPTH || nspos >= PASER_STATE_DEPTH) {
+            retval = -EOVERFLOW;
+            goto error;
+        }
+
         if (nspos > cspos && cstate != JSON_STATE_NULL)
             sstack[cspos] = cstate;
         else if (nspos < cspos && nstate == JSON_STATE_NULL)
@@ -140,8 +147,10 @@ int json_parse(const char *buff, struct json_node **root)
         else if (nnpos > cnpos) {
             parent = node;
             node = malloc(sizeof(*node));
-            if (!node)
-                return -ENOMEM;
+            if (!node) {
+                retval = -ENOMEM;
+                goto error;
+            }
             memset(node, 0, sizeof(*node));
             if (cnpos >= 0) {
                 nstack[cnpos] = parent;
@@ -151,17 +160,19 @@ int json_parse(const char *buff, struct json_node **root)
             list_head_init(&node->child);
         }
 
-        switch (*walk) {
-            case '[':
-                node->flags |= JSON_IS_ARRAY;
-                break;
+        if (is_struct(nstate)) {
+            switch (*walk) {
+                case '[':
+                    json_set_array(node);
+                    break;
 
-            case '{':
-                node->flags |= JSON_IS_OBJECT;
-                break;
+                case '{':
+                    json_set_object(node);
+                    break;
 
-            default:
-                break;
+                default:
+                    break;
+            }
         }
 
         if (nstate != JSON_STATE_ESC) {
@@ -170,25 +181,33 @@ int json_parse(const char *buff, struct json_node **root)
                 switch (cstate) {
                     case JSON_STATE_NAME:
                         node->name = strdup(tbuff);
+                        if (!node->name) {
+                            retval = -ENOMEM;
+                            goto error;
+                        }
                         break;
 
                     case JSON_STATE_STRING:
                         node->string = strdup(tbuff);
-                        node->flags |= JSON_IS_STRING;
+                        if (!node->string) {
+                            retval = -ENOMEM;
+                            goto error;
+                        }
+                        json_set_string(node);
                         break;
 
                     case JSON_STATE_NUMBER:
                         node->number = atol(tbuff);
-                        node->flags |= JSON_IS_NUMBER;
+                        json_set_number(node);
                         break;
 
                     case JSON_STATE_OTHER:
                         if (!strcmp(tbuff, "null"))
-                            node->flags |= JSON_IS_NULL;
+                            json_set_null(node);
                         else if (!strcmp(tbuff, "true"))
-                            node->flags |= JSON_IS_TRUE;
+                            json_set_true(node);
                         else if (!strcmp(tbuff, "false"))
-                            node->flags |= JSON_IS_FALSE;
+                            json_set_false(node);
                         break;
 
                     default:
@@ -201,7 +220,8 @@ int json_parse(const char *buff, struct json_node **root)
                     nblock = realloc(tbuff, tsize);
                     if (!nblock) {
                         free(tbuff);
-                        return -ENOMEM;
+                        retval = -ENOMEM;
+                        goto error;
                     }
                     tbuff = nblock;
                 }
@@ -218,8 +238,95 @@ int json_parse(const char *buff, struct json_node **root)
         cstate = nstate;
     }
 
-    if (root)
+error:
+    free(tbuff);
+    if (cnpos > 0)
+        node = *nstack;
+
+    if (retval)
+        json_release(node);
+    else if (root)
         *root = node;
 
-    return 0;
+    return retval;
+}
+
+static int encode_depth(struct json_node *parent, char *buff, int size, int len, unsigned int depth)
+{
+    #define json_sprintf(fmt, ...) len += snprintf(buff + len, max(0, size - len), fmt, ##__VA_ARGS__)
+    struct json_node *child;
+    unsigned int count;
+
+    if (json_test_array(parent))
+        json_sprintf("[\n");
+    else if (json_test_object(parent))
+        json_sprintf("{\n");
+    else
+        return 0;
+
+    list_for_each_entry(child, &parent->child, sibling) {
+        for (count = 0; count < depth + 1; ++count)
+            json_sprintf("\t");
+        if (json_test_object(parent))
+            json_sprintf("%s: ", child->name);
+        if (json_test_array(child) || json_test_object(child))
+            len = encode_depth(child, buff, size, len, depth + 1);
+        else if (json_test_number(child))
+            json_sprintf("%ld,\n", child->number);
+        else if (json_test_string(child))
+            json_sprintf("\"%s\",\n", child->string);
+        else if (json_test_null(child))
+            json_sprintf("null,\n");
+        else if (json_test_true(child))
+            json_sprintf("true,\n");
+        else /* json_test_false(child) */
+            json_sprintf("false,\n");
+    }
+
+    if (!list_check_empty(&parent->child)) {
+        len -= 2;
+        json_sprintf("\n");
+    }
+
+    for (count = 0; count < depth; ++count)
+        json_sprintf("\t");
+    if (json_test_array(parent))
+        json_sprintf("],\n");
+    else if (json_test_object(parent))
+        json_sprintf("},\n");
+
+    if (!parent->parent) {
+        len -= 2;
+        json_sprintf("\n");
+    }
+
+    return len;
+}
+
+int json_encode(struct json_node *root, char *buff, int size)
+{
+    return encode_depth(root, buff, size, 0, 0) + 1;
+}
+
+void json_release(struct json_node *root)
+{
+    struct json_node *node, *tmp;
+
+    if (unlikely(!root))
+        return;
+
+    list_for_each_entry_safe(node, tmp, &root->child, sibling) {
+        list_del(&node->sibling);
+        if (json_test_array(node) || json_test_object(node)) {
+            json_release(node);
+            continue;
+        }
+        if (node->name)
+            free(node->name);
+        if (json_test_string(node))
+            free(node->string);
+        free(node);
+    }
+
+    free(root);
 }

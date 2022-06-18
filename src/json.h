@@ -31,7 +31,7 @@ enum json_flags {
 struct json_node {
     struct json_node *parent;
     struct list_head sibling;
-    const char *name;
+    char *name;
     unsigned long flags;
     union {
         struct list_head child;
@@ -40,6 +40,32 @@ struct json_node {
     };
 };
 
+#define GENERIC_JSON_BITOPS(name, value)                    \
+static inline void json_clr_##name(struct json_node *json)  \
+{                                                           \
+    json->flags &= ~value;                                  \
+}                                                           \
+                                                            \
+static inline void json_set_##name(struct json_node *json)  \
+{                                                           \
+    json->flags |= value;                                   \
+}                                                           \
+                                                            \
+static inline bool json_test_##name(struct json_node *json) \
+{                                                           \
+    return !!(json->flags & value);                         \
+}
+
+GENERIC_JSON_BITOPS(array, JSON_IS_ARRAY)
+GENERIC_JSON_BITOPS(object, JSON_IS_OBJECT)
+GENERIC_JSON_BITOPS(string, JSON_IS_STRING)
+GENERIC_JSON_BITOPS(number, JSON_IS_NUMBER)
+GENERIC_JSON_BITOPS(null, JSON_IS_NULL)
+GENERIC_JSON_BITOPS(true, JSON_IS_TRUE)
+GENERIC_JSON_BITOPS(false, JSON_IS_FALSE)
+
 extern int json_parse(const char *buff, struct json_node **root);
+extern int json_encode(struct json_node *root, char *buff, int size);
+extern void json_release(struct json_node *root);
 
 #endif  /* _JSON_H_ */
