@@ -248,7 +248,7 @@ error:
     else if (root)
         *root = node;
 
-    return retval;
+    return node ? retval : -ENODATA;
 }
 
 static int encode_depth(struct json_node *parent, char *buff, int size, int len, unsigned int depth)
